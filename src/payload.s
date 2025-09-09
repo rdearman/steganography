@@ -72,6 +72,9 @@ HEADER_NAMEBUF:
     li      a2, 8
     li      a7, 63         # read
     ecall
+    blt     a0, x0, syscall_error_x       # syscall failed (a0 < 0)
+    li      t0, 8
+    bltu    a0, t0, _unexpected_eof_x     # short read (<8) → error
 
     # assemble their 8 LSBs (LSB-first)
     li      t4, 0
@@ -779,6 +782,16 @@ invalid_bmp_error_x:
     li      a0, -1
     j       epilogue_x
 
+_unexpected_eof_x:
+    la      a0, perr_unexpected_eof
+    call    printf
+    li      a0, 0
+    call    fflush
+    li      a0, -1
+    j       epilogue_x
+
+
+	
 # Common epilogue (extract)
 epilogue_x:
     ld      s11,32(sp)
