@@ -53,10 +53,9 @@ HEADER_NAMEBUF:
         bltu    a0, t4, syscall_error_macro
 
         li      t5, 0                # loop counter
+        la      t1, inbuf            # FIX: Initialize buffer address once
 1:
         beq     t5, t4, 2f           # compare vs t4, not t3
-        la      t1, inbuf
-        add     t1, t1, t5
         lbu     t2, 0(t1)
         andi    t2, t2, 0xFE
 
@@ -64,6 +63,7 @@ HEADER_NAMEBUF:
         andi    t3, t3, 1
         or      t2, t2, t3
         sb      t2, 0(t1)
+        addi    t1, t1, 1            # FIX: Increment the buffer pointer
 
         addi    t5, t5, 1
         j       1b
@@ -87,6 +87,8 @@ HEADER_NAMEBUF:
 .endm
 
 
+# NOTE: Caller must NOT pass t0..t6 as \dest, because this macro
+# saves/restores t0..t6 after setting \dest. Use s* or a* regs.
 # Read one embedded byte from 8 pixel bytes into register 'dest'.
 # Uses temporary registers t0..t6.
 # Requires: s0=input BMP fd, 'inbuf' scratch (>= 8 bytes).
@@ -113,14 +115,14 @@ HEADER_NAMEBUF:
         # assemble their 8 LSBs (LSB-first)
         li      t5, 0                # loop counter i = 0..7
         li      t0, 0                # accumulator for the final byte
+        la      t4, inbuf            # FIX: Initialize buffer address once
 3:
         beq     t5, t6, 4f
-        la      t4, inbuf            # use t4 for buffer address
-        add     t4, t4, t5
-        lbu     t4, 0(t4)
-        andi    t4, t4, 1            # get the LSB in t4
-        sll     t4, t4, t5           # shift it left by loop counter
-        or      t0, t0, t4           # OR it into the accumulator
+        lbu     t3, 0(t4)
+        andi    t3, t3, 1            # get the LSB in t3
+        sll     t3, t3, t5           # shift it left by loop counter
+        or      t0, t0, t3           # OR it into the accumulator
+        addi    t4, t4, 1            # FIX: Increment the buffer pointer
         addi    t5, t5, 1
         j       3b
 4:
@@ -452,23 +454,26 @@ header_done:
 
 
         ############################################################
-        ## Embed payload bytes
+        ## Embed payload bytes (FIXED: read into separate buffer)
         ############################################################
         mv      t4, s11            # remaining payload bytes
 embed_loop:
         beqz    t4, payload_done
 
-        # read 1 byte from payload
+        # Read 1 byte from payload into a temporary stack buffer
+        addi    sp, sp, -8
         mv      a0, s10
-        la      a1, inbuf
+        mv      a1, sp
         li      a2, 1
         li      a7, 63             # read
         ecall
         blt     a0, x0, syscall_error
         beqz    a0, payload_done   # unexpected EOF
 
-        la      t6, inbuf
-        lbu     t0, 0(t6)
+        # Load the byte from the stack into t0 for the macro call
+        lbu     t0, 0(sp)
+        addi    sp, sp, 8           # Restore stack pointer
+
         addi    t4, t4, -1
 
         EMBED_BYTE t0
@@ -829,14 +834,16 @@ have_output_name:
         mv      t4, s11
 _byte_loop:
         beqz    t4, _extract_done
-        NEXT_EMBEDDED_BYTE t3      # assembled byte in t3
+        NEXT_EMBEDDED_BYTE s10     # FIX: Use a saved register
         # write it
-        mv      a0, s5
-        la      a1, inbuf
-        sb      t3, 0(a1)
-        li      a2, 1
-        li      a7, 64             # write
+        addi    sp, sp, -8
+        sb      s10, 0(sp)          # put extracted byte on stack
+        mv      a0, s5              # fd
+        mv      a1, sp              # buffer = &byte
+        li      a2, 1               # count
+        li      a7, 64              # write
         ecall
+        addi    sp, sp, 8           # restore stack
         blt     a0, x0, syscall_error_x
         addi    t4, t4, -1
         j       _byte_loop
@@ -990,7 +997,7 @@ payload_error_errno:
 2:
         la      t0, INPUT_FILE
         ld      a2, 0(t0)          # filename
-        la      a0, perr_errno     # "Error (%s) opening %s\\n"
+        la      a0, perr_errno     # "Error (%s) opening %s\n"
         call    printf
         li      a0, 0
         call    fflush
@@ -1004,21 +1011,21 @@ payload_error_errno:
 # Data
 # ----------------------------------------------------------------------
 .section .rodata
-        perr_errno:            .asciz "Error (%s) opening %s\\n"
-        perr_shortread:        .asciz "Error: short read (%ld bytes) from %s\\n"
-        perr_notbmp:           .asciz "Error: not a BMP (got 0x%02X 0x%02X) in %s\\n"
-        msg_bmpok:             .asciz "Valid BMP input file\\n"
+        perr_errno:            .asciz "Error (%s) opening %s\n"
+        perr_shortread:        .asciz "Error: short read (%ld bytes) from %s\n"
+        perr_notbmp:           .asciz "Error: not a BMP (got 0x%02X 0x%02X) in %s\n"
+        msg_bmpok:             .asciz "Valid BMP input file\n"
         unknown_err:           .asciz "Unknown error"
-        dbg_fmt:               .asciz "W=%d, H=%d, BPP=%d, CAP=%d\\n"
-        dbg_payload:           .asciz "Payload size = %ld bytes\\n"
-        perr_toolarge:         .asciz "Error: payload too large (%ld > %ld)\\n"
-        perr_reqtoolarge:      .asciz "Error: requested extract length %ld exceeds capacity %ld\\n"
-        perr_unexpected_eof:   .asciz "Error: unexpected EOF in BMP pixel data during extraction\\n"
-        err_bad_header:        .asciz "Error: missing SNKY header in image\\n"
-        fmt_sizes:             .asciz "filesize=%ld, bfOffBits=%ld\\n"
-        dbg_magic:             .asciz "DEBUG: Magic bytes: 0x%02X 0x%02X 0x%02X 0x%02X\\n"
-        dbg_payload_len:       .asciz "DEBUG: Payload length: %ld\\n"
-        dbg_name_len:          .asciz "DEBUG: Name length: %ld\\n"
+        dbg_fmt:               .asciz "W=%d, H=%d, BPP=%d, CAP=%d\n"
+        dbg_payload:           .asciz "Payload size = %ld bytes\n"
+        perr_toolarge:         .asciz "Error: payload too large (%ld > %ld)\n"
+        perr_reqtoolarge:      .asciz "Error: requested extract length %ld exceeds capacity %ld\n"
+        perr_unexpected_eof:   .asciz "Error: unexpected EOF in BMP pixel data during extraction\n"
+        err_bad_header:        .asciz "Error: missing SNKY header in image\n"
+        fmt_sizes:             .asciz "filesize=%ld, bfOffBits=%ld\n"
+        dbg_magic:             .asciz "DEBUG: Magic bytes: 0x%02X 0x%02X 0x%02X 0x%02X\n"
+        dbg_payload_len:       .asciz "DEBUG: Payload length: %ld\n"
+        dbg_name_len:          .asciz "DEBUG: Name length: %ld\n"
 
 .data
 .align 8
