@@ -32,6 +32,7 @@ HEADER_NAMEBUF:
 # Requires: s0=input BMP fd, s5=output BMP fd, 'inbuf' scratch (>= 8 bytes).
 # IMPORTANT: use register shift (srl) with a variable shift amount. Do NOT use srli.
 .macro EMBED_BYTE r
+	#increment stack and save all the registers before we clobber them. 
         addi    sp, sp, -72
         sd      t0, 64(sp)
         sd      t1, 56(sp)
@@ -55,6 +56,11 @@ HEADER_NAMEBUF:
         li      t5, 0                # loop counter
         la      t1, inbuf            # FIX: Initialize buffer address once
 1:
+	# Loop start. Using a numeric local label ("1:") instead of a named label
+	# because this macro may be expanded multiple times. Normal named labels
+	# would collide if the macro is used more than once, but "1b"/"1f"
+	# always refer to the nearest matching numeric label.
+	
         beq     t5, t4, 2f           # compare vs t4, not t3
         lbu     t2, 0(t1)
         andi    t2, t2, 0xFE
